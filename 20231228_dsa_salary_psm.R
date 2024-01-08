@@ -15,6 +15,8 @@ library(MatchIt)
 library(umap)
 library(ggpmisc)
 library(tableone)
+library(cobalt)
+
 
 # Settings ----------------------------------------------------------------
 
@@ -49,6 +51,7 @@ data = read_data("../playground_python/data/20231228_job_summary_salary_test.csv
 data = data%>%
   mutate(y = salary%>%log,
          x = factor(category == "Data Analyst", c(F,T), c("Non-DA", "DA")))
+
 
 data_emb_1 = get_data_emb("embeddingall-mpnet-base-v2")
 data_emb_2 = get_data_emb("embeddingmulti-qa-mpnet-base-dot-v1")
@@ -101,7 +104,7 @@ cov_list = list(
   #Linear Regression
   "1", vars_ji, vars_tc, vars_tn, c(vars_ji, vars_tc), c(vars_ji, vars_tn),
   #PSM_LR
-  vars_ji, vars_tc, vars_tn, vars_e1, vars_e2, vars_e3, vars_e4, c(vars_ji, vars_e4), c(vars_tc, vars_e4), c(vars_tn, vars_e4), c(vars_ji, vars_tc, vars_e4), c(vars_ji, vars_tn, vars_e4)
+  vars_ji, vars_tc, vars_tn, vars_e1, vars_e2, vars_e3, vars_e4, c(vars_ji, vars_e3), c(vars_tc, vars_e3), c(vars_tn, vars_e3), c(vars_ji, vars_tc, vars_e3), c(vars_ji, vars_tn, vars_e3)
   )
 
 cov_formula = sapply(cov_list, function(x) paste(x, collapse = " + ")%>%paste("x ~ ", ., sep = ""))%>%sapply(., as.formula)
@@ -145,6 +148,19 @@ group_level = c("category", "district", "industry", "management", "education", "
 group_label = c("Job Category", "Company Location (District)", "Industry", "Managerial Positions", "Min Educational Requirement", "Min Experience Requirement", "Responsibility Category", paste(topic_category_label%>%stringr::str_replace_all(., "\n", "/")))
 
 # Salary Summary ----------------------------------------------------------
+
+data%>%
+  group_by(category, min_experience)%>%
+  summarise(n = n(),
+            q2 = salary%>%quantile(.5)%>%comma(., digits = .1, scale = 0.001, prefix = "NT$", suffix = "K"))%>%
+  dcast(category ~ min_experience, value = "q2")%>%
+  arrange(category)%>%
+  kable(escape = F, col.names = c("Category", "0yr", "1~2yr", "3~4yr", "5+yr"), align = "c")%>%
+  kable_styling(full_width = F, c("striped", "hover"))%>%
+  add_header_above(c(" " = 1, "Min Experience" = 4))%>%
+  add_header_above(c("Pivot Analysis of Job Titles and Minimum Experience Requirements\non Median Minimum Salaries" = 5))%>%
+  row_spec(2, bold = T, color = "#A62B1F")
+
 
 salary_summary = lapply(c("category", "district", vars_ji, vars_tc, vars_tn), function(x){
   data%>%
@@ -237,7 +253,7 @@ list_result = lapply(1:length(cov_formula), function(x){
 
   psm = matchit(cov_formula[[x]], data = data, method = "nearest", distance = "glm", caliper = 0.1)
 
-  if(x>1){
+  if(x>6){
     sub_data = match.data(psm)
   } else {
     sub_data = data
@@ -257,6 +273,10 @@ list_distances = sapply(list_result, function(x){
   x[["psm"]]%>%summary()%>%.[[4]]%>%.["distance", "Std. Mean Diff."]
 })
 
+list_psm = sapply(list_result, function(x){
+  x[["psm"]]
+})
+
 # Sensitivity Test --------------------------------------------------------
 
 list_sen_data = list(data%>%filter(!industry == "Manufacturing"),
@@ -268,11 +288,11 @@ list_sen_data = list(data%>%filter(!industry == "Manufacturing"),
 
 list_result_sen = lapply(list_sen_data, function(x){
 
-  psm = matchit(cov_formula[[17]], data = x, method = "nearest", distance = "logit", caliper = 0.1)
+  psm = matchit(cov_formula[[18]], data = x, method = "nearest", distance = "logit", caliper = 0.1)
 
-  cem = lm(formula = ce_formula[[17]], data = match.data(psm))
+  cem = lm(formula = ce_formula[[18]], data = match.data(psm))
 
-  list(cov_formula = cov_formula[[17]], ce_formula = ce_formula[[17]], "psm" = psm, "cem" = cem)%>%
+  list(cov_formula = cov_formula[[18]], ce_formula = ce_formula[[18]], "psm" = psm, "cem" = cem)%>%
     return()
 })
 
@@ -283,7 +303,6 @@ list_model_sen = lapply(list_result_sen, function(x){
 list_distances_sen = sapply(list_result_sen, function(x){
   x[["psm"]]%>%summary()%>%.[[4]]%>%.["distance", "Std. Mean Diff."]
 })
-
 
 # Summary All Estimation --------------------------------------------------
 
@@ -306,7 +325,7 @@ test_summary = c(list_model, list_model_sen)%>%
   data.table%>%
   mutate(id = row_number(),
          distance = c(list_distances, list_distances_sen),
-         test = ifelse(id<16, "General", "Sensitiviy"),
+         test = ifelse(id<19, "General", "Sensitiviy"),
          model = ifelse(id<7, "LR", "PSM + LR"),
          control = c("None", "JI", "TC", "TN", "JI+TC", "JI+TN",
                      "JI", "TC", "TN", "E1", "E2", "E3", "E4", "JI+E4", "TC+E4", "TN+E4", "JI+TC+E4", "JI+TN+E4",
@@ -336,7 +355,7 @@ test_summary%>%
   scale_color_discrete_diverging("Berlin")+
   labs(x = "Salary Diff. between DA and Others ($NTD)", y = "",
        title = "Illustrating Unequal Pay",
-       subtitle = "Data Analysts Earn $3.5K Less for Similar Job Responsibilities")+
+       subtitle = "Data Analysts Earn Less for Similar Job Responsibilities")+
   theme_minimal()+
   theme(legend.position = "none",
         panel.grid.major = element_blank(),
@@ -348,10 +367,68 @@ test_summary%>%
   mutate(r2 = paste(comma(r.squared,0.01), comma(adj.r.squared,0.01), sep = "/"),
          distance = comma(distance, 0.001),
          distance = ifelse(id < 7, "Not used", distance),
-         label = paste(comma(x, .01, scale = 10^-3),"<br>(",comma(xmax, .01, scale = 10^-3), " ~ ", comma(xmin, .01, scale = 10^-3), ")", sep = ""))%>%
+         label = paste(comma(x, .01, scale = 10^-3, prefix = "NT$", suffix = "K"),"<br>(",comma(xmax, .1, scale = 10^-3), " ~ ", comma(xmin, .01, scale = 10^-3), ")", sep = ""),
+         control = c("None", "JR<sup>a</sup>", "TR<sup>b</sup>", "ST<sup>c</sup>", "JR<sup>a</sup> + TR<sup>b</sup>", "JR<sup>a</sup> + ST<sup>c</sup>"))%>%
+  select(id, control, label, r2)%>%
+  kable(escape = F, col.names = c("Model", "Covariates", "Salary Difference between<br>DA and Other Jobs", "R<sup>2</sup>/Adj. R<sup>2</sup>"), align = "c")%>%
+  kable_styling(c("hover", "striped", "condensed"), full_width = F)%>%
+  add_header_above(c("Controlling for Other Factors on Salary Impact\nUsing Univariate and Multivariate Regression Models" = 4))%>%
+  column_spec(1:4,extra_css = "vertical-align:middle;")%>%
+  row_spec(6, bold = T, color = "#A62B1F")%>%
+  footnote(alphabet = c("Job Requirements.", "6 Types of Job Responsibilities.", "26 Specific Job Duties within the 6 Types of Responsibilities."))
+
+test_summary%>%
+  filter(id>6, id<19)%>%
+  mutate(r2 = paste(comma(r.squared,0.01), comma(adj.r.squared,0.01), sep = "/"),
+         distance = comma(distance, 0.001),
+         distance = ifelse(id < 7, "Not used", distance),
+         label = paste(comma(x, .01, scale = 10^-3, prefix = "NT$", suffix = "K"),"<br>(",comma(xmax, .1, scale = 10^-3), " ~ ", comma(xmin, .01, scale = 10^-3), ")", sep = ""),
+         control = c("JR<sup>a</sup>", "TR<sup>b</sup>", "ST<sup>c</sup>",
+                     "VJD<sup>*</sup>", "VJD<sup>&dagger;</sup>", "VJD<sup>&Dagger;</sup>", "VJD<sup>&sect;</sup>",
+                     "JR<sup>a</sup> + VJD", "TR<sup>b</sup> + VJD", "ST<sup>c</sup> + VJD", "JR<sup>a</sup> + TR<sup>b</sup> + VJD", "JR<sup>a</sup> + ST<sup>c</sup> + VJD"),
+         emb = c("None", "None", "None", "all-mpnet-base-v2", "multi-qa-mpnet-base-dot-v1", "all-distilroberta-v1", "all-MiniLM-L12-v2", "all-MiniLM-L12-v2", "all-MiniLM-L12-v2", "all-MiniLM-L12-v2", "all-MiniLM-L12-v2", "all-MiniLM-L12-v2"))%>%
   select(id, control, n, distance, label, r2)%>%
-  kable(escape = F, col.names = c("Model", "Method", "Covariates", "Exclusion", "Sample Size", "Distance<br>after matched", "Effect on Salary", "R2/R2 Adj."), align = "c")%>%
-  kable_styling(c("hover", "striped", "condensed"), full_width = F, font_size = 12)
+  kable(escape = F, col.names = c("Model", "Covariates", "Sample<br>Size", "Non-DA vs DA<br>Distance", "Salary Difference between<br>DA and Other Jobs", "R<sup>2</sup>/Adj. R<sup>2</sup>"), align = "c")%>%
+  kable_styling(c("hover", "striped", "condensed"), full_width = F, position = "center")%>%
+  add_header_above(c("Estimating Propensity Scores with GLM and Implementing Nearest Neighbor Matching\nto Ensure Feature Alignment Between DA and Non-DA Roles"=6))%>%
+  column_spec(1:6,extra_css = "vertical-align:middle;")%>%
+  row_spec(12, bold = T, color = "#A62B1F")%>%
+  footnote(alphabet = c("Job Requirements.", "6 Types of Job Responsibilities.", "26 Specific Job Duties within the 6 Types of Responsibilities."),
+           symbol = c("sentence-transformers/all-mpnet-base-v2", "sentence-transformers/multi-qa-mpnet-base-dot-v1", "sentence-transformers/all-distilroberta-v1", "sentence-transformers/all-MiniLM-L12-v2"))
+
+love.plot(w.out1,
+          drop.distance = TRUE,
+          var.order = "unadjusted",
+          abs = TRUE,
+          line = TRUE,
+          thresholds = c(m = .1))
+
+
+var_corplot_level = c("industryAdvertising, Publishing, and Media", "industryFinance and Insurance", "industryHealthcare and Social Welfare", "industryInformation and Communication Technology", "industryManufacturing", "industryProfessional Services", "industryService, Wholesale, Retail, and Transportation", "education", "educationDoctor", "educationMaster", "managementTRUE", "min_experience0", "min_experience1~2", "min_experience3~4", "min_experience5+", "tn_ai_model_deploymentTRUE", "tn_assigned_tasks_by_supervisorsTRUE", "tn_big_data_platform_maintenanceTRUE", "tn_communication_algorithm_developmentTRUE", "tn_computer_vision_algorithmsTRUE", "tn_customer_behavior_analysis_and_segmentationTRUE", "tn_daily_production_of_analysis_reportsTRUE", "tn_data_analysis_and_developmentTRUE", "tn_data_analysis_and_model_developmentTRUE", "tn_data_driven_business_analysisTRUE", "tn_data_driven_team_collaborationTRUE", "tn_data_visualization_developmentTRUE", "tn_database_management_and_maintenanceTRUE", "tn_database_performance_monitoringTRUE", "tn_deep_learning_models_and_algorithmsTRUE", "tn_digital_advertising_optimizationTRUE", "tn_etl_processes_and_integrationTRUE", "tn_machine_learning_for_businessTRUE", "tn_nlp_and_ner_tool_developmentTRUE", "tn_perform_statistical_data_analysisTRUE", "tn_proficient_in_google_analytics_toolsTRUE", "tn_proficient_python_programming_and_linuxTRUE", "tn_requirement_interviews_and_communicationTRUE", "tn_technical_documentation_writerTRUE", "tn_testing_and_integrationTRUE", "tn_trading_risk_management_systemsTRUE", "vector_1", "vector_2", "vector_3", "vector_4", "vector_5", "vector_6", "vector_7", "vector_8", "vector_9", "vector_10")%>%rev
+var_corplot_label = c("Ind.:Advertising, Publishing, and Media", "Ind.:Finance and Insurance", "Ind.:Healthcare and Social Welfare", "Ind.:Information and Communication Technology", "Ind.:Manufacturing", "Ind.:Professional Services", "Ind.:Service, Wholesale, Retail, and Transportation", "Edu.: None", "Edu:. Doctor", "Edu.: Master", "Mana.: True", "Min. Exp.: 0", "Min. Exp.: 1~2", "Min. Exp.: 3~4", "Min. Exp.: 5+", "ST 1", "ST 2", "ST 3", "ST 4", "ST 5", "ST 6", "ST 7", "ST 8", "ST 9", "ST 10", "ST 11", "ST 12", "ST 13", "ST 14", "ST 15", "ST 16", "ST 17", "ST 18", "ST 19", "ST 20", "ST 21", "ST 22", "ST 23", "ST 24", "ST 25", "ST 26", "VJD 1", "VJD 2", "VJD 3", "VJD 4", "VJD 5", "VJD 6", "VJD 7", "VJD 8", "VJD 9", "VJD 10")%>%rev
+
+rbind(list_psm[[18]]%>%summary%>%.[[3]]%>%data.frame()%>%mutate(vars = rownames(.))%>%select(vars, Std..Mean.Diff.)%>%data.table()%>%mutate(vars = stringr::str_replace(vars, "emb(.*)X", "vector_"),type = "Unadjuested"),
+      # list_psm[[7]]%>%summary%>%.[[4]]%>%data.frame()%>%mutate(vars = rownames(.))%>%select(vars, Std..Mean.Diff.)%>%data.table()%>%mutate(type = "Model 7"),
+      # list_psm[[12]]%>%summary%>%.[[4]]%>%data.frame()%>%mutate(vars = rownames(.))%>%select(vars, Std..Mean.Diff.)%>%data.table()%>%mutate(vars = stringr::str_replace(vars, "emb(.*)X", "vector_"), type = "Model 12"),
+      # list_psm[[14]]%>%summary%>%.[[4]]%>%data.frame()%>%mutate(vars = rownames(.))%>%select(vars, Std..Mean.Diff.)%>%data.table()%>%mutate(vars = stringr::str_replace(vars, "emb(.*)X", "vector_"),type = "Model 14"),
+      list_psm[[18]]%>%summary%>%.[[4]]%>%data.frame()%>%mutate(vars = rownames(.))%>%select(vars, Std..Mean.Diff.)%>%data.table()%>%mutate(vars = stringr::str_replace(vars, "emb(.*)X", "vector_"),type = "Model 18"))%>%
+  filter(vars != "distance")%>%
+  mutate(vars = factor(vars, var_corplot_level, var_corplot_label),
+         col = ifelse(vars %like% "ST", 2, 1),
+         type = type%>%factor(., c("Unadjuested", "Model 7", "Model 12", "Model 14", "Model 18")))%>%
+  ggplot(aes(x = vars,  y = abs(Std..Mean.Diff.), group = type, color = type))+
+  geom_hline(yintercept = .1, linewidth = .5, color = "red", linetype = 2)+
+  geom_point()+
+  coord_flip()+
+  facet_wrap(~col, ncol = 2, scales = "free_y")+
+  scale_color_discrete_qualitative("Set 2")+
+  scale_x_discrete(labels =label_wrap(30))+
+  theme_minimal()+
+  labs(x = "", y = "Absolute Standardized Mean Difference", title = "Covariate Balance", color = "Model")+
+  theme(legend.position = "bottom",
+        legend.title = element_blank(),
+        title = element_text(),
+        strip.text = element_blank())
 
 
 
